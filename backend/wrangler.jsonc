@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "niva-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-31",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://techanisha.github.io,http://127.0.0.1:8123,http://localhost:8123",
+    "SESSION_DAYS": "30"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "niva-orders",
+      "database_id": "da5de5aa-9bea-4314-8fd5-07e467f90e34"
+    }
+  ]
+}

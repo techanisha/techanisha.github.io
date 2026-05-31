@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+admin-bootstrap-code.txt
+wrangler-*.log
+.wrangler-dry-run/
