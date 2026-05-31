@@ -106,6 +106,24 @@ img{display:block;max-width:100%}
 .search-wrap .input{padding-left:40px}
 .filter-select{width:180px}
 .orders-count{color:var(--taupe);font-size:12px;font-weight:700;margin-left:auto;white-space:nowrap}
+.catalog-shell{border-top:1px solid var(--line);margin-top:34px;padding-top:24px}
+.catalog-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
+.catalog-head h2{font-family:var(--serif);font-size:42px;font-weight:500;line-height:.95;margin:5px 0 0}
+.catalog-head p{color:var(--taupe);font-size:13px;margin:7px 0 0}
+.catalog-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,430px);gap:18px;align-items:start}
+.product-list{display:grid;gap:9px}
+.product-row{display:grid;grid-template-columns:1fr auto;gap:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--white);padding:14px}
+.product-row h3{font-size:14px;margin:0}
+.product-row p{color:var(--taupe);font-size:12px;margin:4px 0 0}
+.product-row-actions{display:flex;align-items:center;gap:9px}
+.stock{border-radius:999px;background:var(--ok-bg);color:var(--ok);font-size:11px;font-weight:800;padding:5px 8px;white-space:nowrap}
+.stock.out{background:var(--danger-bg);color:var(--danger)}
+.catalog-form{position:sticky;top:90px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:16px}
+.catalog-form h3{font-family:var(--serif);font-size:30px;font-weight:600;margin:0 0 13px}
+.catalog-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.catalog-form-grid .span-2{grid-column:1/-1}
+.catalog-checks{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.catalog-actions{display:flex;gap:8px}
 .table-wrap{border:1px solid var(--line);border-radius:var(--radius);background:var(--white);overflow:hidden}
 table{width:100%;border-collapse:collapse}
 th{background:var(--panel);color:var(--taupe);font-size:10px;font-weight:800;letter-spacing:.06em;padding:12px 14px;text-align:left;text-transform:uppercase;white-space:nowrap}
@@ -202,6 +220,8 @@ tr.order-row:hover{background:#FCFBF8}
   .drawer-body{padding:16px}
   .drawer-head{padding:12px 16px}
   .drawer-foot{padding:13px 16px}
+  .catalog-layout{grid-template-columns:1fr}
+  .catalog-form{position:static}
 }
 @media(max-width:390px){
   .admin-tag{display:none}
@@ -278,10 +298,12 @@ tr.order-row:hover{background:#FCFBF8}
         <p id="updatedAt">Loading order activity...</p>
       </div>
       <div class="page-actions">
+        <a class="btn secondary" href="STORE-OWNER-GUIDE.md" target="_blank" rel="noopener">Owner guide</a>
         <button class="btn secondary" id="exportButton" type="button">
           <svg class="icon small" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
           Export CSV
         </button>
+        <button class="btn secondary" id="catalogButton" type="button">Products & stock</button>
         <button class="btn" id="refreshButton" type="button">
           <svg class="icon small" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg>
           Refresh
@@ -308,6 +330,44 @@ tr.order-row:hover{background:#FCFBF8}
       </div>
       <div id="ordersContent">
         <div class="loading"><div class="spinner"></div>Loading orders...</div>
+      </div>
+    </section>
+
+    <section class="catalog-shell hidden" id="catalogShell" aria-label="Product catalog manager">
+      <header class="catalog-head">
+        <div>
+          <div class="eyebrow">Storefront controls</div>
+          <h2>Products & stock</h2>
+          <p>Edit prices, mark sold-out items, hide a product, or add a new style.</p>
+        </div>
+        <button class="btn" id="newProductButton" type="button">Add product</button>
+      </header>
+      <div class="catalog-layout">
+        <div class="product-list" id="productsContent"><div class="loading"><div class="spinner"></div>Loading products...</div></div>
+        <form class="catalog-form" id="productForm">
+          <h3 id="productFormTitle">Add product</h3>
+          <input id="productId" type="hidden">
+          <div class="catalog-form-grid">
+            <label class="field span-2"><span>Product name</span><input class="input" id="productName" required placeholder="Boutique product name"></label>
+            <label class="field"><span>Price in Rs.</span><input class="input" id="productPrice" type="number" min="0" step="1" required placeholder="2499"></label>
+            <label class="field"><span>Stock</span><input class="input" id="productStock" type="number" min="0" step="1" required placeholder="0"></label>
+            <label class="field"><span>Category</span><select class="select" id="productCategory"><option value="dress">Dress</option><option value="set">Set</option></select></label>
+            <label class="field"><span>Sizes</span><input class="input" id="productSizes" placeholder="S, M, L"></label>
+            <label class="field span-2"><span>Main image key or path</span><input class="input" id="productImage" required placeholder="niva-v2-assets/products/style/front.jpg"></label>
+            <label class="field span-2"><span>Gallery keys or paths</span><textarea class="textarea" id="productGallery" placeholder="front image, side image, detail image"></textarea></label>
+            <label class="field span-2"><span>Colors</span><input class="input" id="productColors" placeholder="#1a1814, #f2ede6"></label>
+            <label class="field span-2"><span>Fabric</span><input class="input" id="productFabric" placeholder="Fabric and texture"></label>
+            <label class="field span-2"><span>Occasion</span><input class="input" id="productOccasion" placeholder="Brunch, dinner, birthdays"></label>
+            <label class="field span-2"><span>Fit</span><input class="input" id="productFit" placeholder="Fit guidance"></label>
+            <label class="field span-2"><span>Care</span><input class="input" id="productCare" placeholder="Gentle hand wash, shade dry"></label>
+          </div>
+          <div class="catalog-checks">
+            <label class="check-row"><input id="productActive" type="checkbox" checked><span>Visible in shop</span></label>
+            <label class="check-row"><input id="productTrending" type="checkbox"><span>Featured</span></label>
+            <label class="check-row"><input id="productNew" type="checkbox"><span>New arrival</span></label>
+          </div>
+          <div class="catalog-actions"><button class="btn" id="saveProductButton" type="submit">Save product</button><button class="btn secondary" id="resetProductButton" type="button">Clear</button></div>
+        </form>
       </div>
     </section>
   </main>
@@ -344,6 +404,7 @@ let currentUser=null;
 let orders=[];
 let serverStats={};
 let activeOrder=null;
+let products=[];
 let toastTimer=null;
 
 const $=id=>document.getElementById(id);
@@ -610,6 +671,85 @@ async function loadOrders({quiet=false}={}){
     }
   }
 }
+async function loadProducts(){
+  $("productsContent").innerHTML=`<div class="loading"><div class="spinner"></div>Loading products...</div>`;
+  try{
+    const data=await api("/admin/products");
+    products=Array.isArray(data.products)?data.products:[];
+    renderProducts();
+  }catch(error){
+    if(!error.authFailure)$("productsContent").innerHTML=`<div class="empty"><strong>Products could not be loaded</strong><div>${esc(error.message)}</div></div>`;
+  }
+}
+function renderProducts(){
+  if(!products.length){
+    $("productsContent").innerHTML=`<div class="empty"><strong>No products yet</strong><div>Add the first style using the form.</div></div>`;
+    return;
+  }
+  $("productsContent").innerHTML=products.map(product=>`<article class="product-row">
+    <div><h3>${esc(product.name)}</h3><p>${esc(product.family)} · ${esc(formatMoney(product.price))} · ${product.active?"Visible in shop":"Hidden from shop"}</p></div>
+    <div class="product-row-actions"><span class="stock ${Number(product.stock)<=0?"out":""}">${Number(product.stock)<=0?"Sold out":`${esc(product.stock)} in stock`}</span><button class="btn secondary" data-product-id="${esc(product.id)}" type="button">Edit</button></div>
+  </article>`).join("");
+}
+function resetProductForm(){
+  $("productForm").reset();
+  $("productId").value="";
+  $("productActive").checked=true;
+  $("productFormTitle").textContent="Add product";
+}
+function editProduct(id){
+  const product=products.find(item=>String(item.id)===String(id));
+  if(!product)return;
+  $("productId").value=product.id;
+  $("productName").value=product.name||"";
+  $("productPrice").value=product.price??"";
+  $("productStock").value=product.stock??0;
+  $("productCategory").value=product.cat||product.category||"dress";
+  $("productSizes").value=(product.sizes||[]).join(", ");
+  $("productImage").value=product.image||"";
+  $("productGallery").value=(product.gallery||[]).join(", ");
+  $("productColors").value=(product.colors||[]).join(", ");
+  $("productFabric").value=product.fabric||"";
+  $("productOccasion").value=product.occasion||"";
+  $("productFit").value=product.fit||"";
+  $("productCare").value=product.care||"";
+  $("productActive").checked=Boolean(product.active);
+  $("productTrending").checked=Boolean(product.trending);
+  $("productNew").checked=Boolean(product.isNew);
+  $("productFormTitle").textContent="Edit product";
+  $("productForm").scrollIntoView({behavior:"smooth",block:"start"});
+}
+async function saveProduct(event){
+  event.preventDefault();
+  const id=$("productId").value;
+  const button=$("saveProductButton");
+  const list=value=>value.split(/[,\n]/).map(item=>item.trim()).filter(Boolean);
+  const body={
+    name:$("productName").value.trim(),price:Number($("productPrice").value),stock:Number($("productStock").value),
+    category:$("productCategory").value,sizes:list($("productSizes").value),image:$("productImage").value.trim(),
+    gallery:list($("productGallery").value),colors:list($("productColors").value),fabric:$("productFabric").value.trim(),
+    occasion:$("productOccasion").value.trim(),fit:$("productFit").value.trim(),care:$("productCare").value.trim(),
+    active:$("productActive").checked,trending:$("productTrending").checked,isNew:$("productNew").checked
+  };
+  setBusy(button,true,"Saving...");
+  try{
+    await api(id?"/admin/products/"+encodeURIComponent(id):"/admin/products",{method:id?"PATCH":"POST",body});
+    await loadProducts();
+    resetProductForm();
+    showToast(id?"Product updated.":"Product added.");
+  }catch(error){
+    if(!error.authFailure)showToast(error.message,"error");
+  }finally{
+    setBusy(button,false);
+  }
+}
+async function toggleCatalog(){
+  const shell=$("catalogShell");
+  const opening=shell.classList.contains("hidden");
+  shell.classList.toggle("hidden",!opening);
+  $("catalogButton").textContent=opening?"Hide products":"Products & stock";
+  if(opening){await loadProducts();shell.scrollIntoView({behavior:"smooth",block:"start"})}
+}
 function addressOf(order){
   const raw=first(order,["address"],first(customer(order),["address"],""));
   const parts=[];
@@ -769,6 +909,11 @@ async function initialize(){
   $("refreshButton").addEventListener("click",()=>loadOrders({quiet:true}));
   $("refreshTopButton").addEventListener("click",()=>loadOrders({quiet:true}));
   $("exportButton").addEventListener("click",exportCsv);
+  $("catalogButton").addEventListener("click",toggleCatalog);
+  $("newProductButton").addEventListener("click",()=>{resetProductForm();$("productForm").scrollIntoView({behavior:"smooth",block:"start"})});
+  $("resetProductButton").addEventListener("click",resetProductForm);
+  $("productForm").addEventListener("submit",saveProduct);
+  $("productsContent").addEventListener("click",event=>{const target=event.target.closest("[data-product-id]");if(target)editProduct(target.dataset.productId)});
   $("searchInput").addEventListener("input",renderOrders);
   $("statusFilter").addEventListener("change",renderOrders);
   $("drawerOverlay").addEventListener("click",closeDrawer);

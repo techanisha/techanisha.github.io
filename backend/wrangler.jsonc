@@ -11,7 +11,8 @@
   },
   "vars": {
     "ALLOWED_ORIGINS": "https://techanisha.github.io,http://127.0.0.1:8123,http://localhost:8123",
-    "SESSION_DAYS": "30"
+    "SESSION_DAYS": "30",
+    "GEMINI_MODEL": "gemini-2.5-flash-lite"
   },
   "d1_databases": [
     {

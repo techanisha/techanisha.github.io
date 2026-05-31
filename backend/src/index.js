@@ -1,13 +1,3 @@
-const CATALOG = new Map([
-  [101, { name: "Rosette Tiered Off-Shoulder Midi Dress", image: "rosette-pink-front", category: "dress", price: 2499, sizes: ["S", "M", "L", "XL"] }],
-  [102, { name: "Organza Ruffle Off-Shoulder Mini Dress", image: "organza-black-front", category: "dress", price: 2199, sizes: ["S", "M", "L"] }],
-  [103, { name: "Ivory Ruched Top & Brown Tiered Skirt Set", image: "ivory-set-hero", category: "set", price: 2699, sizes: ["S", "M", "L", "XL"] }],
-  [104, { name: "Pink Floral Smocked Puff-Sleeve Midi Dress", image: "pink-floral-front", category: "dress", price: 1799, sizes: ["S", "M", "L", "XL"] }],
-  [105, { name: "Pink Dot Ruffle Halter & Trouser Set", image: "pink-dot-front", category: "set", price: 2399, sizes: ["S", "M", "L"] }],
-  [106, { name: "Polka Dot Tie-Neck Trouser Set", image: "polka-white-front", category: "set", price: 2299, sizes: ["S", "M", "L", "XL"] }],
-  [107, { name: "Taupe Linen Blazer & Trouser Set", image: "taupe-linen-front", category: "set", price: 2899, sizes: ["S", "M", "L", "XL"] }]
-]);
-
 const ORDER_STATUSES = [
   "Awaiting Instagram confirmation",
   "Confirmed",
@@ -40,6 +30,13 @@ export default {
       if (path === "/health" && request.method === "GET") {
         return json({ ok: true, service: "niva-api" }, 200, cors);
       }
+      if (path === "/products" && request.method === "GET") {
+        return json({ products: await listProducts(env, false) }, 200, cors);
+      }
+      if (path === "/ai/style" && request.method === "POST") {
+        if (!origin) fail(403, "Open NIVA Assistant from the official storefront.");
+        return json({ reply: await geminiStyle(request, env, ip) }, 200, cors);
+      }
       if (path === "/auth/register" && request.method === "POST") {
         return json(await register(request, env, ip), 201, cors);
       }
@@ -64,7 +61,7 @@ export default {
       }
       if (path === "/orders" && request.method === "POST") {
         const session = await requireSession(request, env);
-        return json({ order: await createOrder(request, env, session) }, 201, cors);
+        return json({ order: await createOrder(request, env, session, ip) }, 201, cors);
       }
       if (path === "/track" && request.method === "POST") {
         return json({ order: await trackOrder(request, env, ip) }, 200, cors);
@@ -79,6 +76,14 @@ export default {
         await requireAdmin(request, env);
         return json(await adminOrders(env), 200, cors);
       }
+      if (path === "/admin/products" && request.method === "GET") {
+        await requireAdmin(request, env);
+        return json({ products: await listProducts(env, true) }, 200, cors);
+      }
+      if (path === "/admin/products" && request.method === "POST") {
+        await requireAdmin(request, env);
+        return json({ product: await createProduct(request, env) }, 201, cors);
+      }
 
       const detailMatch = path.match(/^\/admin\/orders\/([0-9a-f-]+)$/i);
       if (detailMatch && request.method === "GET") {
@@ -88,6 +93,11 @@ export default {
       if (detailMatch && request.method === "PATCH") {
         const admin = await requireAdmin(request, env);
         return json({ order: await updateAdminOrder(request, env, admin, detailMatch[1]) }, 200, cors);
+      }
+      const productMatch = path.match(/^\/admin\/products\/(\d+)$/);
+      if (productMatch && request.method === "PATCH") {
+        await requireAdmin(request, env);
+        return json({ product: await updateProduct(request, env, Number(productMatch[1])) }, 200, cors);
       }
 
       return json({ error: "Not found" }, 404, cors);
@@ -171,7 +181,9 @@ async function bootstrapAdmin(request, env, ip) {
   return { token: await createSession(env, user.user_id), user: publicUser(user) };
 }
 
-async function createOrder(request, env, session) {
+async function createOrder(request, env, session, ip) {
+  await enforceRateLimit(env, `order-user:${session.user_id}`, 5, 3600);
+  await enforceRateLimit(env, `order-ip:${ip}`, 12, 3600);
   const body = await readJson(request);
   const rawItems = Array.isArray(body.items) ? body.items : [];
   if (!rawItems.length || rawItems.length > 12) fail(400, "Your bag must contain between 1 and 12 items.");
@@ -184,13 +196,21 @@ async function createOrder(request, env, session) {
   const landmark = validText(delivery.landmark, "Landmark", 2, 140);
   const instagram = optionalText(delivery.instagram, 80);
   const customerNotes = optionalText(delivery.notes, 500);
+  const requestedIds = [...new Set(rawItems.map((raw) => Number(raw.id)))];
+  if (requestedIds.some((id) => !Number.isInteger(id) || id < 1)) fail(400, "One of your bag items is invalid.");
+  const placeholders = requestedIds.map(() => "?").join(",");
+  const productRows = await env.DB.prepare(
+    `SELECT * FROM products WHERE active = 1 AND id IN (${placeholders})`
+  ).bind(...requestedIds).all();
+  const catalog = new Map(productRows.results.map((row) => [Number(row.id), productFromRow(row)]));
   let subtotal = 0;
   let totalQty = 0;
   const items = rawItems.map((raw) => {
     const id = Number(raw.id);
     const qty = Number(raw.qty);
-    const product = CATALOG.get(id);
+    const product = catalog.get(id);
     if (!product || !Number.isInteger(qty) || qty < 1 || qty > 10) fail(400, "One of your bag items is invalid.");
+    if (product.stock < qty) fail(409, `${product.name} does not have enough stock for this quantity.`);
     const size = String(raw.size || "").trim().toUpperCase();
     if (!product.sizes.includes(size)) fail(400, `Choose an available size for ${product.name}.`);
     const color = optionalText(raw.color, 32) || "Default";
@@ -200,6 +220,24 @@ async function createOrder(request, env, session) {
     subtotal += lineTotal;
     return { id, ...product, qty, size, color, total: lineTotal };
   });
+  const reservations = [...items.reduce((map, item) => {
+    const current = map.get(item.id) || { id: item.id, name: item.name, qty: 0 };
+    current.qty += item.qty;
+    map.set(item.id, current);
+    return map;
+  }, new Map()).values()];
+  for (const reservation of reservations) {
+    const product = catalog.get(reservation.id);
+    if (product.stock < reservation.qty) fail(409, `${reservation.name} does not have enough stock for this quantity.`);
+  }
+  const reserveResults = await env.DB.batch(reservations.map((reservation) => env.DB.prepare(
+    "UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ? AND stock >= ?"
+  ).bind(reservation.qty, new Date().toISOString(), reservation.id, reservation.qty)));
+  const reserved = reservations.filter((reservation, index) => Number(reserveResults[index]?.meta?.changes) === 1);
+  if (reserved.length !== reservations.length) {
+    await restoreReservations(env, reserved);
+    fail(409, "One of these styles just sold out. Refresh your bag and choose an available quantity.");
+  }
   const deliveryCharge = subtotal >= 1500 ? 0 : 120;
   const total = subtotal + deliveryCharge;
   const id = crypto.randomUUID();
@@ -217,7 +255,12 @@ async function createOrder(request, env, session) {
       "INSERT INTO order_items (id, order_id, product_id, name, image, category, unit_price, qty, total, size, color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(crypto.randomUUID(), id, item.id, item.name, item.image, item.category, item.price, item.qty, item.total, item.size, item.color))
   ];
-  await env.DB.batch(statements);
+  try {
+    await env.DB.batch(statements);
+  } catch (error) {
+    await restoreReservations(env, reservations);
+    throw error;
+  }
   return receiptOrder({
     id, order_num: orderNum, customer_name: customerName, phone, email, district, address, landmark, instagram,
     customer_notes: customerNotes, items_summary: summary, subtotal, delivery_charge: deliveryCharge, total,
@@ -275,11 +318,16 @@ async function updateAdminOrder(request, env, admin, id) {
   const adminNotes = optionalText(body.adminNotes ?? current.admin_notes, 2000);
   if (!ORDER_STATUSES.includes(status)) fail(400, "Choose a valid order status.");
   if (!RETURN_FLAGS.includes(returnFlag)) fail(400, "Choose a valid return flag.");
+  if (current.status === "Cancelled" && status !== "Cancelled") fail(409, "Cancelled orders cannot be reopened. Ask the customer to place a fresh order.");
   const now = new Date().toISOString();
   const changes = [];
   if (status !== current.status) changes.push(`Status: ${status}`);
   if (trackingNumber !== current.tracking_number) changes.push(trackingNumber ? `Tracking added: ${trackingNumber}` : "Tracking removed");
   if (returnFlag !== current.return_flag) changes.push(`Return flag: ${returnFlag}`);
+  if (status === "Cancelled" && current.status !== "Cancelled") {
+    await restoreOrderStock(env, id);
+    changes.push("Reserved stock returned to catalog");
+  }
   await env.DB.prepare(
     "UPDATE orders SET status = ?, tracking_number = ?, return_flag = ?, admin_notes = ?, updated_at = ? WHERE id = ?"
   ).bind(status, trackingNumber, returnFlag, adminNotes, now, id).run();
@@ -289,6 +337,123 @@ async function updateAdminOrder(request, env, admin, id) {
     ).bind(crypto.randomUUID(), id, status, changes.join(" | "), admin.user_id, now).run();
   }
   return adminOrder(env, id);
+}
+
+async function listProducts(env, includeInactive) {
+  const rows = await env.DB.prepare(
+    `SELECT * FROM products ${includeInactive ? "" : "WHERE active = 1"} ORDER BY active DESC, trending DESC, is_new DESC, id`
+  ).all();
+  return rows.results.map(publicProduct);
+}
+
+async function createProduct(request, env) {
+  const body = await readJson(request);
+  const product = productPayload(body);
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    "INSERT INTO products (name, image, category, family, price, sizes_json, colors_json, gallery_json, stock, active, trending, is_new, fabric, occasion, fit, care, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).bind(
+    product.name, product.image, product.category, product.family, product.price, JSON.stringify(product.sizes),
+    JSON.stringify(product.colors), JSON.stringify(product.gallery), product.stock, product.active ? 1 : 0,
+    product.trending ? 1 : 0, product.isNew ? 1 : 0, product.fabric, product.occasion, product.fit, product.care, now, now
+  ).run();
+  const row = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(result.meta.last_row_id).first();
+  return publicProduct(row);
+}
+
+async function updateProduct(request, env, id) {
+  const current = await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(id).first();
+  if (!current) fail(404, "Product not found.");
+  const product = productPayload(await readJson(request), productFromRow(current));
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    "UPDATE products SET name = ?, image = ?, category = ?, family = ?, price = ?, sizes_json = ?, colors_json = ?, gallery_json = ?, stock = ?, active = ?, trending = ?, is_new = ?, fabric = ?, occasion = ?, fit = ?, care = ?, updated_at = ? WHERE id = ?"
+  ).bind(
+    product.name, product.image, product.category, product.family, product.price, JSON.stringify(product.sizes),
+    JSON.stringify(product.colors), JSON.stringify(product.gallery), product.stock, product.active ? 1 : 0,
+    product.trending ? 1 : 0, product.isNew ? 1 : 0, product.fabric, product.occasion, product.fit, product.care, now, id
+  ).run();
+  return publicProduct(await env.DB.prepare("SELECT * FROM products WHERE id = ?").bind(id).first());
+}
+
+function productPayload(body, current = {}) {
+  const name = productText(body.name ?? current.name, "Product name", 2, 140);
+  const image = validImageRef(body.image ?? current.image);
+  const category = String(body.category ?? current.category ?? "dress").trim().toLowerCase();
+  if (!["dress", "set"].includes(category)) fail(400, "Choose dress or set as the category.");
+  const price = integerValue(body.price ?? current.price, "Price", 0, 1000000);
+  const stock = integerValue(body.stock ?? current.stock, "Stock", 0, 100000);
+  const sizes = listValue(body.sizes ?? current.sizes, ["S", "M", "L"], 12).map((value) => {
+    const size = value.toUpperCase();
+    if (!/^[A-Z0-9 -]{1,12}$/.test(size)) fail(400, "Use short letters or numbers for product sizes.");
+    return size;
+  });
+  const colors = listValue(body.colors ?? current.colors, ["#1a1814"], 12).map((value) => {
+    if (!/^#[0-9a-f]{6}$/i.test(value)) fail(400, "Use six-digit hex colors such as #1a1814.");
+    return value.toLowerCase();
+  });
+  const gallery = listValue(body.gallery ?? current.gallery, [image], 16).map(validImageRef);
+  return {
+    name, image, category, family: category === "set" ? "Set" : "Dress", price, stock, sizes, colors, gallery,
+    active: boolValue(body.active ?? current.active ?? true), trending: boolValue(body.trending ?? current.trending ?? false),
+    isNew: boolValue(body.isNew ?? current.isNew ?? false), fabric: optionalProductText(body.fabric ?? current.fabric, 300),
+    occasion: optionalProductText(body.occasion ?? current.occasion, 300), fit: optionalProductText(body.fit ?? current.fit, 300),
+    care: optionalProductText(body.care ?? current.care, 300)
+  };
+}
+
+function productFromRow(row) {
+  return {
+    id: Number(row.id), name: row.name, image: row.image, category: row.category, family: row.family, price: Number(row.price),
+    sizes: jsonList(row.sizes_json, ["S", "M", "L"]), colors: jsonList(row.colors_json, ["#1a1814"]),
+    gallery: jsonList(row.gallery_json, [row.image]), stock: Number(row.stock), active: Boolean(row.active),
+    trending: Boolean(row.trending), isNew: Boolean(row.is_new), fabric: row.fabric || "", occasion: row.occasion || "",
+    fit: row.fit || "", care: row.care || ""
+  };
+}
+
+function publicProduct(row) {
+  const product = productFromRow(row);
+  return { ...product, ne: product.name, cat: product.category };
+}
+
+async function geminiStyle(request, env, ip) {
+  if (!env.GEMINI_API_KEY) fail(503, "NIVA Assistant is being connected. Please DM @niva.creation_ for styling help for now.");
+  await enforceRateLimit(env, "ai:global", 300, 86400);
+  await enforceRateLimit(env, `ai:${ip}`, 20, 600);
+  const message = validText((await readJson(request)).message, "Message", 2, 600);
+  const products = await listProducts(env, false);
+  const catalog = products.map((product) => `${product.name}: Rs. ${product.price}; stock ${product.stock}; ${product.occasion}`).join("\n");
+  const prompt = `You are NIVA Assistant, a concise fashion stylist for a Nepal-based women's dresses and sets boutique. Recommend only products from the live catalog below. Mention price in NPR when recommending an item. For sizing, say customers should check the size guide and DM @niva.creation_ with measurements if unsure. Do not promise stock, delivery dates, returns beyond damaged-delivery or wrong-item/wrong-size fulfilment issues, or NCM tracking before parcel booking. Keep replies warm, useful, and under 110 words.\n\nLIVE CATALOG:\n${catalog}\n\nCUSTOMER MESSAGE:\n${message}`;
+  const model = String(env.GEMINI_MODEL || "gemini-2.5-flash-lite").trim();
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 180, temperature: 0.6 } })
+  });
+  if (!response.ok) {
+    console.error(JSON.stringify({ event: "gemini_error", status: response.status }));
+    fail(502, "NIVA Assistant is taking a short pause. Please DM @niva.creation_ for quick styling help.");
+  }
+  const data = await response.json();
+  const reply = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("").trim();
+  if (!reply) fail(502, "NIVA Assistant could not answer that yet. Please DM @niva.creation_ for quick styling help.");
+  return reply;
+}
+
+async function restoreReservations(env, reservations) {
+  if (!reservations.length) return;
+  const now = new Date().toISOString();
+  await env.DB.batch(reservations.map((reservation) => env.DB.prepare(
+    "UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?"
+  ).bind(reservation.qty, now, reservation.id)));
+}
+
+async function restoreOrderStock(env, orderId) {
+  const rows = await env.DB.prepare(
+    "SELECT product_id AS id, SUM(qty) AS qty FROM order_items WHERE order_id = ? GROUP BY product_id"
+  ).bind(orderId).all();
+  await restoreReservations(env, rows.results.map((row) => ({ id: Number(row.id), qty: Number(row.qty) })));
 }
 
 async function requireAdmin(request, env) {
@@ -457,6 +622,53 @@ function optionalText(value, max) {
   const text = String(value || "").trim();
   if (text.length > max) fail(400, "One of your details is too long.");
   return text;
+}
+
+function productText(value, label, min, max) {
+  const text = validText(value, label, min, max);
+  if (/[<>]/.test(text)) fail(400, `${label} cannot contain HTML characters.`);
+  return text;
+}
+
+function optionalProductText(value, max) {
+  const text = optionalText(value, max);
+  if (/[<>]/.test(text)) fail(400, "Product descriptions cannot contain HTML characters.");
+  return text;
+}
+
+function integerValue(value, label, min, max) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) fail(400, `${label} must be a whole number between ${min} and ${max}.`);
+  return number;
+}
+
+function boolValue(value) {
+  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+}
+
+function listValue(value, fallback, maxItems) {
+  const list = Array.isArray(value) ? value : String(value || "").split(",");
+  const cleaned = list.map((item) => String(item).trim()).filter(Boolean);
+  if (!cleaned.length) return fallback;
+  if (cleaned.length > maxItems || cleaned.some((item) => item.length > 500)) fail(400, "One of your product lists is too long.");
+  return [...new Set(cleaned)];
+}
+
+function validImageRef(value) {
+  const ref = validText(value, "Product image", 2, 500);
+  if (!/^(?:[a-z0-9][a-z0-9-]*|niva-v2-assets\/[a-z0-9/_-]+\.(?:jpe?g|png|webp)|https:\/\/[a-z0-9./_%?=&-]+)$/i.test(ref)) {
+    fail(400, "Use a safe product image key, local image path, or HTTPS image URL.");
+  }
+  return ref;
+}
+
+function jsonList(value, fallback) {
+  try {
+    const list = JSON.parse(value || "[]");
+    return Array.isArray(list) && list.length ? list : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function makeOrderNumber() {
